@@ -1,59 +1,53 @@
 #version 440
-// #extension GL_ARB_shader_storage_buffer_object: enable
 const uint LIST_END = 0xFFFFFFFF;
 
-layout(r32ui, binding = 0) uniform uimage3D voxels;
-layout(rg32ui, binding = 1) uniform uimage2D link_list;
+layout(r32ui) uniform uimage3D voxels;
+layout(rg32ui) uniform uimage2D link_list;
 layout(r32ui, binding = 2) uniform uimage2D counter;
 
-uniform float u_size;
-uniform float u_res;
+uniform usamplerBuffer tri_buffer;
+uniform samplerBuffer vert_buffer;
+
+uniform vec3 u_size;
+uniform vec3 u_res;
 uniform vec3 u_aabb[2];
 uniform int u_count;
 
 struct Triangle {
-	uint v0, v1, v2, pad;
+	int v0, v1, v2, pad;
 };
 
-layout(std430, binding=0) buffer TriBuffer {
-	Triangle tri_buffer[];
-};
-
-struct Vertex {
-	vec4 position;
-	vec4 normal;
-};
-
-layout(std430, binding=1) buffer VertBuffer {
-	Vertex vertex_buffer[];
-};
-
-
+void fetch_triangle(int i, inout Triangle triangle)
+{
+	triangle.v0 = int(texelFetch(tri_buffer, i * 3 + 0).x);
+	triangle.v1 = int(texelFetch(tri_buffer, i * 3 + 1).x);
+	triangle.v2 = int(texelFetch(tri_buffer, i * 3 + 2).x);
+	triangle.pad = 0;
+}
 
 layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 void main()
 {
-	uint work_id = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+	int work_id = int(gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x);
 	if (work_id >= u_count)
 		return;
 
-	Triangle tri = tri_buffer[work_id];
+	Triangle triangle;
+	fetch_triangle(work_id, triangle);
 
-	vec3 v0 = vertex_buffer[tri.v0+tri.pad].position.xyz;
-	vec3 v1 = vertex_buffer[tri.v1+tri.pad].position.xyz;
-	vec3 v2 = vertex_buffer[tri.v2+tri.pad].position.xyz;
+	vec3 v0 = texelFetch(vert_buffer, triangle.v0).xyz;
+	vec3 v1 = texelFetch(vert_buffer, triangle.v1).xyz;
+	vec3 v2 = texelFetch(vert_buffer, triangle.v2).xyz;
 
-	v0 = u_res * (v0 - u_aabb[0]) / u_size;
-	v1 = u_res * (v1 - u_aabb[0]) / u_size;
-	v2 = u_res * (v2 - u_aabb[0]) / u_size;
-	// v0 = ((v0 / (u_size * 0.5)) * vec3(0.5) + vec3(0.5))*u_res;
-	// v1 = ((v1 / (u_size * 0.5)) * vec3(0.5) + vec3(0.5))*u_res;
-	// v2 = ((v2 / (u_size * 0.5)) * vec3(0.5) + vec3(0.5))*u_res;
+	v0 = u_res.x * (v0 - u_aabb[0]) / u_size.x;
+	v1 = u_res.y * (v1 - u_aabb[0]) / u_size.y;
+	v2 = u_res.z * (v2 - u_aabb[0]) / u_size.z;
 
 	ivec3 bb_min = ivec3(floor(min(min(v0, v1), v2)));
 	ivec3 bb_max = ivec3(ceil(max(max(v0, v1), v2)));
 
 	int width = imageSize(link_list).x;
+
 
 	for (int z = bb_min.z; z < bb_max.z; ++z) {
 		for (int y = bb_min.y; y < bb_max.y; ++y) {

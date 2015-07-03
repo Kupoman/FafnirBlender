@@ -1,5 +1,6 @@
 import ctypes
 import math
+import struct
 import time
 
 import os
@@ -13,238 +14,373 @@ import OpenGL
 OpenGL.ERROR_CHECKING = False
 from OpenGL.GL import *
 from OpenGL.GL import shaders
+from OpenGL.GL.ARB.bindless_texture import *
 
 from .shaders import Shader
 
 
+class VEC3(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_float),
+        ("y", ctypes.c_float),
+        ("z", ctypes.c_float),
+    ]
+
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
+    def __repr__(self):
+        s = "["
+        for field in self._fields_:
+            s += str(getattr(self, field[0])) + ", "
+        s +="]"
+        return s
+
+
+class VEC4(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_float),
+        ("y", ctypes.c_float),
+        ("z", ctypes.c_float),
+        ("w", ctypes.c_float),
+    ]
+
+    def __init__(self, x, y, z, w=1):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+
+    def __repr__(self):
+        s = "["
+        for field in self._fields_:
+            s += str(getattr(self, field[0])) + ", "
+        s +="]"
+        return s
+
+
 class VERTEX(ctypes.Structure):
-	_fields_ = [
-		("vx", ctypes.c_float),
-		("vy", ctypes.c_float),
-		("vz", ctypes.c_float),
-		("vw", ctypes.c_float),
+    _fields_ = [
+        ("vx", ctypes.c_float),
+        ("vy", ctypes.c_float),
+        ("vz", ctypes.c_float),
+        ("vw", ctypes.c_float),
 
-		("nx", ctypes.c_float),
-		("ny", ctypes.c_float),
-		("nz", ctypes.c_float),
-		("nw", ctypes.c_float),
-	]
+        ("nx", ctypes.c_float),
+        ("ny", ctypes.c_float),
+        ("nz", ctypes.c_float),
+        ("nw", ctypes.c_float),
+    ]
 
-	def __repr__(self):
-		s = "["
-		for field in self._fields_:
-			s += str(getattr(self, field[0])) + ", "
-		s +="]"
-		return s
+    def __repr__(self):
+        s = "["
+        for field in self._fields_:
+            s += str(getattr(self, field[0])) + ", "
+        s +="]"
+        return s
 
 
 class TRIANGLE(ctypes.Structure):
-	_fields_ = [
-		("v0", ctypes.c_uint),
-		("v1", ctypes.c_uint),
-		("v2", ctypes.c_uint),
-		("pad", ctypes.c_uint),
-	]
+    _fields_ = [
+        ("v0", ctypes.c_uint),
+        ("v1", ctypes.c_uint),
+        ("v2", ctypes.c_uint),
+        ("pad", ctypes.c_uint),
+    ]
 
-	def __init__(self, v0, v1, v2):
-		self.v0 = v0
-		self.v1 = v1
-		self.v2 = v2
+    def __init__(self, v0, v1, v2):
+        self.v0 = v0
+        self.v1 = v1
+        self.v2 = v2
+
+
+class Node:
+    def __init__(self, model_matrix):
+        self.model_matrix = model_matrix
+        self.meshes = []
+
+
+class Voxelizer:
+    src_dir = os.path.dirname(os.path.realpath(__file__))
+
+    shader_clear = 0
+    shader_voxelize = 0
+    tex_counter = 0
+
+    @classmethod
+    def init(cls):
+        # Setup voxel clear computer shader
+        cshader = glCreateShader(GL_COMPUTE_SHADER)
+        src = cls.src_dir + "/shaders/comp_clear_voxels.glsl"
+        with open(src, 'r') as fin:
+            src = fin.read()
+        comp = shaders.compileShader(src, GL_COMPUTE_SHADER)
+        cls.shader_clear = shaders.compileProgram(comp)
+        glDeleteShader(cshader)
+
+        # Setup voxelize computer shader
+        cshader = glCreateShader(GL_COMPUTE_SHADER)
+        src = cls.src_dir + "/shaders/comp_voxelize.glsl"
+        with open(src, 'r') as fin:
+            src = fin.read()
+        comp = shaders.compileShader(src, GL_COMPUTE_SHADER)
+        cls.shader_voxelize = shaders.compileProgram(comp)
+        glDeleteShader(cshader)
+
+        # Setup texture counter data
+        cls.tex_counter = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, cls.tex_counter)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, 1, 1, 0, GL_RED_INTEGER,
+                        GL_UNSIGNED_INT, None)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glBindTexture(GL_TEXTURE_2D, 0)
+
+    @classmethod
+    def voxelize_mesh(cls, mesh):
+        # start = time.perf_counter()
+
+        glBindImageTexture(2, cls.tex_counter, 0, GL_FALSE, 0,
+                            GL_READ_WRITE, GL_R32UI)
+
+        glBindTexture(GL_TEXTURE_2D, cls.tex_counter)
+        data = (ctypes.c_uint32*1)(0)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RED_INTEGER,
+                        GL_UNSIGNED_INT, data)
+
+        glUseProgram(cls.shader_clear)
+
+        loc = glGetUniformLocation(cls.shader_clear, "voxels")
+        glUniformHandleui64ARB(loc, mesh.hnd_voxel_data)
+
+        glDispatchCompute(*mesh.voxel_resolution)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+
+        glUseProgram(cls.shader_voxelize)
+        loc = glGetUniformLocation(cls.shader_voxelize, "u_res")
+        glUniform3f(loc, *mesh.voxel_resolution)
+        loc = glGetUniformLocation(cls.shader_voxelize, "u_size")
+        glUniform3f(loc, *mesh.dimensions)
+        loc = glGetUniformLocation(cls.shader_voxelize, "u_aabb[0]")
+        glUniform3f(loc, *mesh.aabb[0])
+        loc = glGetUniformLocation(cls.shader_voxelize, "u_aabb[1]")
+        glUniform3f(loc, *mesh.aabb[1])
+        loc = glGetUniformLocation(cls.shader_voxelize, "u_count")
+        glUniform1i(loc, mesh.count)
+
+        loc = glGetUniformLocation(cls.shader_voxelize, "tri_buffer")
+        glUniformHandleui64ARB(loc, mesh.hnd_indices)
+
+        loc = glGetUniformLocation(cls.shader_voxelize, "vert_buffer")
+        glUniformHandleui64ARB(loc, mesh.hnd_positions)
+
+        loc = glGetUniformLocation(cls.shader_voxelize, "voxels")
+        glUniformHandleui64ARB(loc, mesh.hnd_voxel_data)
+
+        loc = glGetUniformLocation(cls.shader_voxelize, "link_list")
+        glUniformHandleui64ARB(loc, mesh.hnd_voxel_list)
+
+        glDispatchCompute(mesh.count, 1, 1)
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT)
+
+        glUseProgram(0)
+
+        # glActiveTexture(GL_TEXTURE2)
+        # glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, data)
+        # print("Voxelization time: %.2fms\n" % (time.perf_counter() - start) * 1000)
+        # print(data[0])
+
+
+class GPU_MESH(ctypes.Structure):
+    _fields_ = [
+        ("voxel_resolution", VEC4),
+        ("aabb", (VEC4 * 2)),
+        ("voxel_data", ctypes.c_uint64),
+        ("voxel_list", ctypes.c_uint64),
+        ("tri_buffer", ctypes.c_uint64),
+        ("vert_buffer", ctypes.c_uint64),
+        ("norm_buffer", ctypes.c_uint64),
+        ("pad0", ctypes.c_float),
+        ("pad1", ctypes.c_float),
+    ]
 
 
 class Mesh:
-	__slots__ = ["tri_list", "vert_list"]
+    def __init__(self, vert_count, element_count, positions, normals, indices):
+        self.buf_positions = positions
+        self.buf_normals = normals
+        self.buf_indices = indices
 
-	def __init__(self, tri_list, vert_list):
-		self.tri_list = tri_list
-		self.vert_list = vert_list
+        self.aabb = [
+            (-3, -3, -3),
+            (3, 3, 3)
+        ]
+        self.dimensions = (
+            self.aabb[1][0] - self.aabb[0][0],
+            self.aabb[1][1] - self.aabb[0][1],
+            self.aabb[1][2] - self.aabb[0][2]
+        )
+
+        # Voxels
+        self.voxel_resolution = (1, 1, 1)
+        self.tex_voxel_data, self.tex_voxel_list = glGenTextures(2)
+
+        glBindTexture(GL_TEXTURE_3D, self.tex_voxel_data)
+        glTexImage3D(GL_TEXTURE_3D, 0, GL_R32UI,
+                    self.voxel_resolution[0], self.voxel_resolution[1],
+                    self.voxel_resolution[2], 0, GL_RED_INTEGER, GL_UNSIGNED_INT,
+                    None)
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        self.hnd_voxel_data = glGetImageHandleARB(self.tex_voxel_data, 0,
+                                                GL_FALSE, 0, GL_R32UI)
+        glMakeImageHandleResidentARB(self.hnd_voxel_data, GL_READ_WRITE)
+
+        glBindTexture(GL_TEXTURE_2D, self.tex_voxel_list)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32UI, 1024, 1024, 0, GL_RG_INTEGER,
+                        GL_UNSIGNED_INT, None)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        self.hnd_voxel_list = glGetImageHandleARB(self.tex_voxel_list, 0,
+                                                GL_FALSE, 0, GL_RG32UI)
+        glMakeImageHandleResidentARB(self.hnd_voxel_list, GL_READ_WRITE)
+
+        # Vertex Data
+        self.vao = glGenVertexArrays(1)
+        glBindVertexArray(self.vao)
+
+        self.vbo_positions, self.vbo_normals, self.vbo_indices = glGenBuffers(3)
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_positions)
+        glBufferData(GL_ARRAY_BUFFER, ctypes.sizeof(self.buf_positions),
+            self.buf_positions, GL_STATIC_DRAW)
+        glEnableClientState(GL_VERTEX_ARRAY)
+        glVertexPointer(3, GL_FLOAT, 0, ctypes.c_void_p(0))
+
+        glBindBuffer(GL_ARRAY_BUFFER, self.vbo_normals)
+        glBufferData(GL_ARRAY_BUFFER, ctypes.sizeof(self.buf_normals),
+            self.buf_normals, GL_STATIC_DRAW)
+        glEnableClientState(GL_NORMAL_ARRAY)
+        glNormalPointer(GL_FLOAT, 0, ctypes.c_void_p(0))
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.vbo_indices)
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, ctypes.sizeof(self.buf_indices),
+            self.buf_indices, GL_STATIC_DRAW)
+        self.count = element_count
+
+        glBindVertexArray(0)
+
+        self.tbo_positions, self.tbo_normals, self.tbo_indices = glGenTextures(3)
+
+        glBindTexture(GL_TEXTURE_BUFFER, self.tbo_positions)
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, self.vbo_positions)
+        self.hnd_positions = glGetTextureHandleARB(self.tbo_positions)
+        glMakeTextureHandleResidentARB(self.hnd_positions)
+
+        glBindTexture(GL_TEXTURE_BUFFER, self.tbo_normals)
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, self.vbo_normals)
+        self.hnd_normals = glGetTextureHandleARB(self.tbo_normals)
+        glMakeTextureHandleResidentARB(self.hnd_normals)
+
+        glBindTexture(GL_TEXTURE_BUFFER, self.tbo_indices)
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R16UI, self.vbo_indices)
+        self.hnd_indices = glGetTextureHandleARB(self.tbo_indices)
+        glMakeTextureHandleResidentARB(self.hnd_indices)
+
+        glBindTexture(GL_TEXTURE_BUFFER, 0)
+
+        self.gpu_data = GPU_MESH()
+        self.gpu_data.voxel_resolution = VEC4(
+            self.voxel_resolution[0],
+            self.voxel_resolution[1],
+            self.voxel_resolution[2],
+            self.count//3
+        )
+        self.gpu_data.aabb[0] = VEC4(*self.aabb[0])
+        self.gpu_data.aabb[1] = VEC4(*self.aabb[1])
+        self.gpu_data.voxel_data = self.hnd_voxel_data
+        self.gpu_data.voxel_list = self.hnd_voxel_list
+        self.gpu_data.tri_buffer = self.hnd_indices
+        self.gpu_data.vert_buffer = self.hnd_positions
+        self.gpu_data.norm_buffer = self.hnd_normals
+
+    def update_voxels(self):
+        Voxelizer.voxelize_mesh(self)
+
+    def __del__(self):
+        print("Delete mesh")
+        glDeleteBuffers((
+            self.vbo_positions,
+            self.vbo_normals,
+            self.vbo_indices,
+        ))
 
 
 def _mat_to_gl(matrix):
-	return [i for col in matrix.col for i in col]
+    return [i for col in matrix.col for i in col]
 
 
 class Engine:
-	def __init__(self):
-		self._scene_texid = glGenTextures(1)
-		self._link_list_texid = glGenTextures(1)
-		self._counter_texid = glGenTextures(1)
+    def __init__(self):
+        self.mesh_buffer = glGenBuffers(1)
 
-		self._scene_vert_buffer = glGenBuffers(1)
-		self._scene_vert_data = (VERTEX * 0)()
-		self._scene_tri_buffer = glGenBuffers(1)
-		self._scene_tri_data = (TRIANGLE * 0)()
-		self._scene_count = 0
-		self._scene_dirty = False
+        self._objects = {}
+        self._meshes = {}
 
-		self._meshes = []
+        Voxelizer.init()
 
-		# Setup voxel clear computer shader
-		cshader = glCreateShader(GL_COMPUTE_SHADER)
-		with open(os.path.dirname(os.path.realpath(__file__)) + "/shaders/comp_clear_voxels.glsl", 'r') as fin:
-			src = fin.read()
-		comp = shaders.compileShader(src, GL_COMPUTE_SHADER)
-		self._shader_prog_clear = shaders.compileProgram(comp)
-		glDeleteShader(cshader)
+        # Setup ray trace shader
+        self._shader_fsq = Shader("fsq.vert", "fsq.frag")
 
-		# Setup voxel grid
-		self._voxel_res = 32
-		self._voxel_aabb = aabb = ((-8, -8, -8), (8, 8, 8))
-		self._voxel_size = (
-			aabb[1][0] - aabb[0][0],
-			aabb[1][1] - aabb[0][1],
-			aabb[1][2] - aabb[0][2]
-		)
+    def __del__(self):
+        glDeleteTextures([self._scene_texid])
+        glDeleteBuffers(2, [self._scene_tri_buffer, self._scene_vert_buffer])
 
-		glBindTexture(GL_TEXTURE_3D, self._scene_texid)
-		glTexImage3D(GL_TEXTURE_3D, 0, GL_R32UI, self._voxel_res, self._voxel_res,
-			self._voxel_res, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, None)
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-		glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-		glBindTexture(GL_TEXTURE_3D, 0)
-		glBindImageTexture(0, self._scene_texid, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI)
+    def add_or_update_mesh(self, name, mesh):
+        self._meshes[name] = mesh
 
-		# Setup ray trace shader
-		self._shader_fsq = Shader("fsq.vert", "fsq.frag")
-		glUseProgram(self._shader_fsq.program)
-		loc = self._shader_fsq.get_location("u_res")
-		glUniform1f(loc, self._voxel_res)
-		loc = self._shader_fsq.get_location("u_size")
-		glUniform1f(loc, self._voxel_size[0])
-		loc = self._shader_fsq.get_location("u_aabb[0]")
-		glUniform3f(loc, *self._voxel_aabb[0])
-		loc = self._shader_fsq.get_location("u_aabb[1]")
-		glUniform3f(loc, *self._voxel_aabb[1])
+    def draw(self, view_mat, proj_mat):
+        glClearColor(0.2, 0.2, 0.2, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT)
 
-		# Setup voxelize computer shader
-		cshader = glCreateShader(GL_COMPUTE_SHADER)
-		with open(os.path.dirname(os.path.realpath(__file__)) + "/shaders/comp_voxelize.glsl", 'r') as fin:
-			src = fin.read()
-		comp = shaders.compileShader(src, GL_COMPUTE_SHADER)
-		self._shader_prog_voxel = shaders.compileProgram(comp)
-		glDeleteShader(cshader)
-		glUseProgram(self._shader_prog_voxel)
-		loc = glGetUniformLocation(self._shader_prog_voxel, "u_res")
-		glUniform1f(loc, self._voxel_res)
-		loc = glGetUniformLocation(self._shader_prog_voxel, "u_size")
-		glUniform1f(loc, self._voxel_size[0])
-		loc = glGetUniformLocation(self._shader_prog_voxel, "u_aabb[0]")
-		glUniform3f(loc, *self._voxel_aabb[0])
-		loc = glGetUniformLocation(self._shader_prog_voxel, "u_aabb[1]")
-		glUniform3f(loc, *self._voxel_aabb[1])
+        mesh_count = len(self._meshes.values())
+        mesh_data = (GPU_MESH * mesh_count)(
+            *[m.gpu_data for m in self._meshes.values()]
+        )
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.mesh_buffer)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, ctypes.sizeof(GPU_MESH) * mesh_count,
+                    mesh_data, GL_STREAM_READ)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.mesh_buffer)
 
-		# Setup texture counter data
-		glBindTexture(GL_TEXTURE_2D, self._counter_texid)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, 1, 1, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, None)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-		glBindImageTexture(2, self._counter_texid, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadMatrixf(view_mat)
+        glMatrixMode(GL_PROJECTION)
+        glLoadMatrixf(proj_mat)
 
-		# Setup linked list data
-		glBindTexture(GL_TEXTURE_2D, self._link_list_texid)
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32UI, 4096, 4096, 0, GL_RG_INTEGER, GL_UNSIGNED_INT, None)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-		glBindImageTexture(1, self._link_list_texid, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RG32UI)
+        for mesh in self._meshes.values():
+            mesh.update_voxels()
+            glBindVertexArray(mesh.vao)
+            # glDrawElements(GL_TRIANGLES, mesh.count, GL_UNSIGNED_SHORT, ctypes.c_void_p(0))
 
-	def __del__(self):
-		glDeleteTextures([self._scene_texid])
-		glDeleteBuffers(2, [self._scene_tri_buffer, self._scene_vert_buffer])
+        glUseProgram(self._shader_fsq.program)
 
-	def voxelize_scene(self, resolution, half_width):
-		# start = time.perf_counter()
-		glUseProgram(self._shader_prog_clear)
-		glDispatchCompute(resolution, resolution, resolution)
-		glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+        loc = self._shader_fsq.get_location("view_matrix")
+        glUniformMatrix4fv(loc, 1, GL_FALSE, view_mat)
 
-		data = (ctypes.c_uint32*1)(0)
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RED_INTEGER,
-						GL_UNSIGNED_INT, data)
+        loc = self._shader_fsq.get_location("proj_matrix")
+        glUniformMatrix4fv(loc, 1, GL_FALSE, proj_mat)
 
-		glUseProgram(self._shader_prog_voxel)
-		dimension = math.ceil(math.sqrt(self._scene_count))
-		loc = glGetUniformLocation(self._shader_prog_voxel, "u_count")
-		glUniform1i(loc, self._scene_count)
-		glDispatchCompute(dimension, dimension, 1)
-		glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT)
+        loc = self._shader_fsq.get_location("num_meshes")
+        glUniform1i(loc, mesh_count)
 
-		# glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, data)
-		# print("Voxelization time: %.2fms\n" % (time.perf_counter() - start) * 1000)
-		# print(data[0])
+        glBegin(GL_TRIANGLE_STRIP)
+        glVertex2i(-1, -1)
+        glVertex2i(1, -1)
+        glVertex2i(-1, 1)
+        glVertex2i(1, 1)
+        glEnd()
 
-	def add_mesh(self, triangles, vertices):
-		mesh = Mesh(triangles, vertices)
-		self._meshes.append(mesh)
-
-	def update_scene_buffers(self):
-		if len(self._meshes) == 0:
-			self._scene_count = 0
-			return
-
-		tri_size = vert_size = 0
-		for mesh in self._meshes:
-			tri_size += ctypes.sizeof(mesh.tri_list)
-			vert_size += ctypes.sizeof(mesh.vert_list)
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._scene_tri_buffer)
-		glBufferData(GL_SHADER_STORAGE_BUFFER, tri_size, None, GL_STREAM_DRAW)
-		glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._scene_vert_buffer)
-		glBufferData(GL_SHADER_STORAGE_BUFFER, vert_size, None, GL_STREAM_DRAW)
-
-		tri_offset = vert_offset = idx_offset = 0
-		for mesh in self._meshes:
-			# Tri SSBO
-			size = ctypes.sizeof(mesh.tri_list)
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._scene_tri_buffer)
-			glBufferSubData(GL_SHADER_STORAGE_BUFFER, tri_offset, size, mesh.tri_list)
-			tri_offset += size
-			for tri in mesh.tri_list:
-				tri.pad = idx_offset
-
-			# Vert SSBO
-			size = ctypes.sizeof(mesh.vert_list)
-			glBindBuffer(GL_SHADER_STORAGE_BUFFER, self._scene_vert_buffer)
-			glBufferSubData(GL_SHADER_STORAGE_BUFFER, vert_offset, size, mesh.vert_list)
-			vert_offset += size
-
-			idx_offset += len(mesh.vert_list)
-
-		self._scene_count = tri_size // ctypes.sizeof(TRIANGLE)
-
-	def draw(self, view_mat, proj_mat):
-		glClearColor(0.2, 0.2, 0.2, 1.0)
-		glClear(GL_COLOR_BUFFER_BIT)
-
-		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self._scene_tri_buffer)
-		glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self._scene_vert_buffer)
-
-		glActiveTexture(GL_TEXTURE0)
-		glBindTexture(GL_TEXTURE_3D, self._scene_texid)
-
-		glActiveTexture(GL_TEXTURE1)
-		glBindTexture(GL_TEXTURE_2D, self._link_list_texid)
-
-		glActiveTexture(GL_TEXTURE2)
-		glBindTexture(GL_TEXTURE_2D, self._counter_texid)
-
-		self.update_scene_buffers()
-		self.voxelize_scene(self._voxel_res, self._voxel_size[0])
-
-		glUseProgram(self._shader_fsq.program)
-
-		loc = self._shader_fsq.get_location("view_matrix")
-		glUniformMatrix4fv(loc, 1, GL_FALSE, view_mat)
-
-		loc = self._shader_fsq.get_location("proj_matrix")
-		glUniformMatrix4fv(loc, 1, GL_FALSE, proj_mat)
-
-		loc = self._shader_fsq.get_location("num_triangles")
-		glUniform1i(loc, self._scene_count)
-
-		glBegin(GL_TRIANGLE_STRIP)
-		glVertex2i(-1, -1)
-		glVertex2i(1, -1)
-		glVertex2i(-1, 1)
-		glVertex2i(1, 1)
-		glEnd()
-
-		glUseProgram(0)
+        glUseProgram(0)
