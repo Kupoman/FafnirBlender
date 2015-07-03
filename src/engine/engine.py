@@ -214,17 +214,33 @@ class Mesh:
         self.buf_indices = indices
 
         self.aabb = [
-            (-3, -3, -3),
-            (3, 3, 3)
+            [0, 0, 0],
+            [0, 0, 0]
         ]
+
+        self.aabb[0][0] = min(positions, key=lambda p: p.x).x * 1.001
+        self.aabb[0][1] = min(positions, key=lambda p: p.y).y * 1.001
+        self.aabb[0][2] = min(positions, key=lambda p: p.z).z * 1.001
+        self.aabb[1][0] = max(positions, key=lambda p: p.x).x * 1.001
+        self.aabb[1][1] = max(positions, key=lambda p: p.y).y * 1.001
+        self.aabb[1][2] = max(positions, key=lambda p: p.z).z * 1.001
+
         self.dimensions = (
             self.aabb[1][0] - self.aabb[0][0],
             self.aabb[1][1] - self.aabb[0][1],
             self.aabb[1][2] - self.aabb[0][2]
         )
 
+        self.count = element_count // 3
+
         # Voxels
-        self.voxel_resolution = (1, 1, 1)
+        res_factor = self.count / (self.dimensions[0] * self.dimensions[1] * self.dimensions[2])
+        res_factor = res_factor ** (1/3)
+        self.voxel_resolution = (
+            math.ceil(self.dimensions[0] * res_factor),
+            math.ceil(self.dimensions[1] * res_factor),
+            math.ceil(self.dimensions[2] * res_factor),
+        )
         self.tex_voxel_data, self.tex_voxel_list = glGenTextures(2)
 
         glBindTexture(GL_TEXTURE_3D, self.tex_voxel_data)
@@ -269,7 +285,6 @@ class Mesh:
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, self.vbo_indices)
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, ctypes.sizeof(self.buf_indices),
             self.buf_indices, GL_STATIC_DRAW)
-        self.count = element_count
 
         glBindVertexArray(0)
 
@@ -297,7 +312,7 @@ class Mesh:
             self.voxel_resolution[0],
             self.voxel_resolution[1],
             self.voxel_resolution[2],
-            self.count//3
+            self.count
         )
         self.gpu_data.aabb[0] = VEC4(*self.aabb[0])
         self.gpu_data.aabb[1] = VEC4(*self.aabb[1])
