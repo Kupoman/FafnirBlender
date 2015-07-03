@@ -96,6 +96,8 @@ bool trace_list(uint ptr, layout(rg32ui) uimage2D link_list, int list_width,
 
 		t = dot(e1, Q) * inv_det;
 
+		if (t < 0) continue;
+
 		if (t < closest_t) {
 			closest_t = t;
 			closest_u = u * inv_det;
@@ -208,7 +210,7 @@ void main()
 			vec3 hit;
 			if (trace_list(ptr, mesh.voxel_list, list_width, ray_o, ray_d, t, tri_index, hit)) {
 				float dist = hit.x + tmin + epsilon;
-				if (dist < closest_hit.x)
+				if (dist > 0 && dist < closest_hit.x)
 				{
 					closest_mesh_id = i;
 					closest_tri_id = tri_index;
