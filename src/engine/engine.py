@@ -5,7 +5,6 @@ import time
 
 import os
 import sys
-from OpenGL.raw.GL.ARB.internalformat_query2 import GL_TEXTURE_2D
 
 path = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(path)
