@@ -39,9 +39,9 @@ void main()
 	vec3 v1 = texelFetch(vert_buffer, triangle.v1).xyz;
 	vec3 v2 = texelFetch(vert_buffer, triangle.v2).xyz;
 
-	v0 = u_res.x * (v0 - u_aabb[0]) / u_size.x;
-	v1 = u_res.y * (v1 - u_aabb[0]) / u_size.y;
-	v2 = u_res.z * (v2 - u_aabb[0]) / u_size.z;
+	v0 = u_res * (v0 - u_aabb[0]) / u_size;
+	v1 = u_res * (v1 - u_aabb[0]) / u_size;
+	v2 = u_res * (v2 - u_aabb[0]) / u_size;
 
 	ivec3 bb_min = ivec3(floor(min(min(v0, v1), v2)));
 	ivec3 bb_max = ivec3(ceil(max(max(v0, v1), v2)));
