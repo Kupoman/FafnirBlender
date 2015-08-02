@@ -147,6 +147,72 @@ void output_results(MeshData mesh, int tri_index, vec3 hit)
 	out_color = vec3(dot(N, L) * 0.8);
 }
 
+struct DDAData {
+	vec3 aabb[2];
+	vec3 resolution;
+	vec3 cell_size;
+	vec3 tmax;
+	vec3 tstep;
+	ivec3 coord_step;
+
+	ivec3 coord;
+	float t;
+};
+
+void dda_init(inout DDAData dda, vec3 aabb[2], vec3 resolution)
+{
+	dda.aabb = aabb;
+	dda.resolution = resolution;
+	dda.cell_size = (aabb[1] - aabb[0]) / resolution;
+}
+
+bool dda_ray_to_bounds(inout DDAData dda, inout vec3 ray_origin, vec3 ray_dir, vec3 ray_inv, out float tmin)
+{
+	vec3 ray_sign = step(0.0, -ray_inv);
+	vec3 bounds = dda.aabb[1] * ray_sign + dda.aabb[0] * (ivec3(1) - ray_sign);
+	vec3 t_vmin = (bounds - ray_origin) * ray_inv;
+	bounds = dda.aabb[0] * ray_sign + dda.aabb[1] * (ivec3(1) - ray_sign);
+	vec3 t_vmax = (bounds - ray_origin) * ray_inv;
+
+	if (any(greaterThan(t_vmin.xyxz, t_vmax.yxzx)))
+		return false;
+
+	tmin = max(max(t_vmin.x, t_vmin.y), t_vmin.z);
+	float tmax = min(min(t_vmax.x, t_vmax.y), t_vmax.z);
+
+	if (tmax <= tmin)
+		return false;
+
+	ray_origin += ray_dir * (tmin + epsilon);
+	return true;
+}
+
+void dda_traversal_init(inout DDAData dda, vec3 ray_origin, vec3 ray_direction, vec3 ray_inverse)
+{
+	dda.coord = ivec3(floor((ray_origin - dda.aabb[0]) / dda.cell_size));
+	vec3 ray_sign = step(0.0, -ray_inverse);
+	vec3 cell_min = dda.coord * dda.cell_size + dda.aabb[0];
+	vec3 cell_max = (dda.coord + vec3(1)) * dda.cell_size + dda.aabb[0];
+	vec3 bounds = cell_min * ray_sign + cell_max * (ivec3(1) - ray_sign);
+	dda.tmax = (bounds - ray_origin) * ray_inverse;
+	dda.coord_step = ivec3(sign(ray_direction));
+	dda.tstep = dda.cell_size * dda.coord_step * ray_inverse;
+	dda.t = min(min(dda.tmax.x, dda.tmax.y), dda.tmax.z);
+}
+
+void dda_traversal_step(inout DDAData dda)
+{
+	ivec3 mask = ivec3(step(-dda.t, -dda.tmax));
+	dda.coord += mask * dda.coord_step;
+	dda.tmax += mask * dda.tstep;
+	dda.t = min(min(dda.tmax.x, dda.tmax.y), dda.tmax.z);
+}
+
+bool dda_in_bounds(DDAData dda)
+{
+	return !any(lessThan(dda.coord, ivec3(0))) && !any(greaterThan(dda.coord, ivec3(dda.resolution-1)));
+}
+
 void main()
 {
 	out_color = vec3(0.2);
@@ -170,45 +236,24 @@ void main()
 		norm_buffer = mesh.norm_buffer;
 		num_triangles = int(mesh.voxel_resolution.w);
 #ifdef VOXEL
+		DDAData mesh_dda;
+		dda_init(mesh_dda, aabb, mesh.voxel_resolution.xyz);
+
 		// Make sure we are in the voxel region
-		vec3 ray_sign = step(0.0, -ray_inv);
-		vec3 bounds = aabb[1] * ray_sign + aabb[0] * (ivec3(1) - ray_sign);
-		vec3 t_vmin = (bounds - ray_o) * ray_inv;
-		bounds = aabb[0] * ray_sign + aabb[1] * (ivec3(1) - ray_sign);
-		vec3 t_vmax = (bounds - ray_o) * ray_inv;
-
-		if (any(greaterThan(t_vmin.xyxz, t_vmax.yxzx)))
+		float tmin;
+		if (!dda_ray_to_bounds(mesh_dda, ray_o, ray_d, ray_inv, tmin))
 			continue;
-
-		float tmin = max(max(t_vmin.x, t_vmin.y), t_vmin.z);
-		float tmax = min(min(t_vmax.x, t_vmax.y), t_vmax.z);
-
-		if (tmax <= tmin)
-			continue;
-
-		ray_o += ray_d * (tmin + epsilon);
-
-		vec3 grid_size = aabb[1] - aabb[0];
-		vec3 grid_res = mesh.voxel_resolution.xyz;
-		vec3 cell_size = vec3(grid_size/grid_res);
-		ivec3 cell_coord = ivec3(floor((ray_o - aabb[0]) / cell_size));
 
 		// Initialize DDA traversal variables
-		vec3 cell_min = cell_coord * cell_size + aabb[0];
-		vec3 cell_max = (cell_coord + vec3(1)) * cell_size + aabb[0];
-		bounds = cell_min * ray_sign + cell_max * (ivec3(1) - ray_sign);
-		vec3 dda_tmax = (bounds - ray_o) * ray_inv;
-		ivec3 coord_step = ivec3(sign(ray_d));
-		vec3 dda_step = cell_size * coord_step * ray_inv;
+		dda_traversal_init(mesh_dda, ray_o, ray_d, ray_inv);
 
 		// Traverse voxel grid
-		while (!(any(lessThan(cell_coord, ivec3(0)))) && !(any(greaterThan(cell_coord, ivec3(grid_res-1))))) {
-			uint ptr = imageLoad(mesh.voxel_data, cell_coord).r;
-			float t = min(min(dda_tmax.x, dda_tmax.y), dda_tmax.z);
+		while (dda_in_bounds(mesh_dda)) {
+			uint ptr = imageLoad(mesh.voxel_data, mesh_dda.coord).r;
 
 			int tri_index;
 			vec3 hit;
-			if (trace_list(ptr, mesh.voxel_list, list_width, ray_o, ray_d, t, tri_index, hit)) {
+			if (trace_list(ptr, mesh.voxel_list, list_width, ray_o, ray_d, mesh_dda.t, tri_index, hit)) {
 				float dist = hit.x + tmin + epsilon;
 				if (dist > 0 && dist < closest_hit.x)
 				{
@@ -219,9 +264,7 @@ void main()
 				break;
 			}
 
-			ivec3 mask = ivec3(step(-t, -dda_tmax));
-			cell_coord += mask * coord_step;
-			dda_tmax += mask * dda_step;
+			dda_traversal_step(mesh_dda);
 		}
 #else
 		int tri_index;
