@@ -212,6 +212,8 @@ class Mesh:
         self.buf_normals = normals
         self.buf_indices = indices
 
+        self.is_dirty = True
+
         self.aabb = [
             [0, 0, 0],
             [0, 0, 0]
@@ -322,7 +324,9 @@ class Mesh:
         self.gpu_data.norm_buffer = self.hnd_normals
 
     def update_voxels(self):
-        Voxelizer.voxelize_mesh(self)
+        if self.is_dirty:
+            Voxelizer.voxelize_mesh(self)
+            self.is_dirty = False
 
     def __del__(self):
         print("Delete mesh")
