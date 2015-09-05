@@ -32,6 +32,11 @@ struct Triangle {
 	int v0, v1, v2, pad;
 };
 
+uniform vec3 scene_aabb[2];
+uniform vec3 scene_resolution;
+layout(r32ui) uniform uimage3D scene_voxels;
+layout(rg32ui) uniform uimage2D scene_list;
+
 in vec3 in_vertex;
 in vec3 in_ray_o;
 in vec3 in_ray_d;
@@ -223,54 +228,66 @@ void main()
 	int closest_tri_id = -1;
 	vec3 closest_hit = vec3(1000, 0, 0);
 
+	DDAData scene_dda;
+	dda_init(scene_dda, scene_aabb, scene_resolution);
+	float unused;
+	vec3 ray_copy = vec3(in_ray_o);
+	if (!dda_ray_to_bounds(scene_dda, ray_copy, ray_d, ray_inv, unused))
+		return;
+	dda_traversal_init(scene_dda, ray_copy, ray_d, ray_inv);
 
-	for (int i = 0; i < num_meshes; ++i) {
-		vec3 ray_o = in_ray_o;
-		MeshData mesh = mesh_buffer[i];
-		vec3 aabb[2];
-		aabb[0] = mesh.aabb[0].xyz;
-		aabb[1] = mesh.aabb[1].xyz;
-		int list_width = imageSize(mesh.voxel_list).x;
-		tri_buffer = mesh.tri_buffer;
-		vert_buffer = mesh.vert_buffer;
-		norm_buffer = mesh.norm_buffer;
-		num_triangles = int(mesh.voxel_resolution.w);
-#ifdef VOXEL
-		DDAData mesh_dda;
-		dda_init(mesh_dda, aabb, mesh.voxel_resolution.xyz);
+	int scene_width = imageSize(scene_list).x;
+	while (dda_in_bounds(scene_dda)) {
+		uint scene_ptr = imageLoad(scene_voxels, scene_dda.coord).r;
 
-		// Make sure we are in the voxel region
-		float tmin;
-		if (!dda_ray_to_bounds(mesh_dda, ray_o, ray_d, ray_inv, tmin))
-			continue;
+		// for (int i = 0; i < num_meshes; ++i) {
+		while (scene_ptr != LIST_END) {
+			uvec2 scene_link = imageLoad(scene_list, ivec2(scene_ptr % scene_width, scene_ptr / scene_width)).rg;
+			scene_ptr = scene_link.y;
+			int i = int(scene_link.x);
+			vec3 ray_o = in_ray_o;
+			MeshData mesh = mesh_buffer[i];
+			vec3 aabb[2];
+			aabb[0] = mesh.aabb[0].xyz;
+			aabb[1] = mesh.aabb[1].xyz;
+			int list_width = imageSize(mesh.voxel_list).x;
+			tri_buffer = mesh.tri_buffer;
+			vert_buffer = mesh.vert_buffer;
+			norm_buffer = mesh.norm_buffer;
+			num_triangles = int(mesh.voxel_resolution.w);
 
-		// Initialize DDA traversal variables
-		dda_traversal_init(mesh_dda, ray_o, ray_d, ray_inv);
+			DDAData mesh_dda;
+			dda_init(mesh_dda, aabb, mesh.voxel_resolution.xyz);
 
-		// Traverse voxel grid
-		while (dda_in_bounds(mesh_dda)) {
-			uint ptr = imageLoad(mesh.voxel_data, mesh_dda.coord).r;
+			// Make sure we are in the voxel region
+			float tmin;
+			if (!dda_ray_to_bounds(mesh_dda, ray_o, ray_d, ray_inv, tmin))
+				continue;
 
-			int tri_index;
-			vec3 hit;
-			if (trace_list(ptr, mesh.voxel_list, list_width, ray_o, ray_d, mesh_dda.t, tri_index, hit)) {
-				float dist = hit.x + tmin + epsilon;
-				if (dist > 0 && dist < closest_hit.x)
-				{
-					closest_mesh_id = i;
-					closest_tri_id = tri_index;
-					closest_hit = vec3(dist, hit.yz);
+			// Initialize DDA traversal variables
+			dda_traversal_init(mesh_dda, ray_o, ray_d, ray_inv);
+
+			// Traverse voxel grid
+			while (dda_in_bounds(mesh_dda)) {
+				uint ptr = imageLoad(mesh.voxel_data, mesh_dda.coord).r;
+
+				int tri_index;
+				vec3 hit;
+				if (trace_list(ptr, mesh.voxel_list, list_width, ray_o, ray_d, mesh_dda.t, tri_index, hit)) {
+					float dist = hit.x + tmin + epsilon;
+					if (dist > 0 && dist < closest_hit.x)
+					{
+						closest_mesh_id = i;
+						closest_tri_id = tri_index;
+						closest_hit = vec3(dist, hit.yz);
+					}
+					break;
 				}
-				break;
-			}
 
-			dda_traversal_step(mesh_dda);
+				dda_traversal_step(mesh_dda);
+			}
 		}
-#else
-		int tri_index;
-		vec3 hit;
-		trace_list(0, mesh.voxel_list, list_width, ray_o, ray_d, 1000, tri_index, hit);
-#endif
+		dda_traversal_step(scene_dda);
 	}
 
 	if (closest_mesh_id != -1)
