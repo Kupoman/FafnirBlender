@@ -16,7 +16,8 @@ from OpenGL.WGL import *
 
 g_width = 1506
 g_height = 871
-g_pbo = 0
+g_pbos = [0, 0]
+g_pbo_index = 0
 g_fbo = 0
 g_render_target = 0
 g_depth_target = 0
@@ -39,11 +40,18 @@ USE_SOCKET = True
 
 
 def update_img(width, height):
-    global g_width, g_height, img_data
+    global g_width, g_height, img_data, g_pbos, g_pbo_index
 
     g_width = 2 ** math.ceil(math.log2(width))
     g_height = 2 ** math.ceil(math.log2(height))
-    img_data = bytearray((ctypes.c_ubyte * (g_width*g_height*3))())
+
+    img_data = (ctypes.c_ubyte * (g_width*g_height*3))()
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[0])
+    glBufferData(GL_PIXEL_PACK_BUFFER, g_width*g_height*3, img_data, GL_STREAM_READ)
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[1])
+    glBufferData(GL_PIXEL_PACK_BUFFER, g_width*g_height*3, img_data, GL_STREAM_READ)
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+
     glBindTexture(GL_TEXTURE_2D, g_render_target)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, g_width, g_height, 0, GL_RGB, GL_UNSIGNED_BYTE, None)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
@@ -54,26 +62,34 @@ def update_img(width, height):
 
 
 def display():
-    global g_time
+    global g_time, g_pbos, g_pbo_index, g_width, g_height, img_data
 
     mrays = 0
     start = time.perf_counter()
     if g_vmat and g_pmat:
         g_engine.draw(g_vmat, g_pmat)
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbo)
     if USE_SOCKET:
-        glReadPixels(0, 0, g_width, g_height, GL_RGB, GL_UNSIGNED_BYTE, img_data)
+        g_pbo_index = (g_pbo_index + 1) % 2;
+        next_index = (g_pbo_index + 1) % 2;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[g_pbo_index])
+        glReadPixels(0, 0, g_width, g_height, GL_RGB, GL_UNSIGNED_BYTE, ctypes.c_void_p())
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, g_pbos[next_index])
+        glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, g_width*g_height*3, img_data)
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0)
+        # glReadPixels(0, 0, g_width, g_height, GL_RGB, GL_UNSIGNED_BYTE, img_data)
     glutSwapBuffers()
 
     end = time.perf_counter()
-    mrays = g_width * g_height / 1000000 / (end - start)
+    elapsed = end - start
+    if elapsed > 0:
+        mrays = g_width * g_height / 1000000 / (end - start)
 
     handle_socket()
 
     new_time = time.perf_counter()
-    glutSetWindowTitle("Fafnir %0.2f ms" % ((new_time - g_time) * 1000))
-    # glutSetWindowTitle("Fafnir %0.2f mrays/s" % (mrays))
+    # glutSetWindowTitle("Fafnir %0.2f ms" % (elapsed * 1000))
+    glutSetWindowTitle("Fafnir %0.2f mrays/s" % (mrays))
     g_time = new_time
 
 
@@ -134,7 +150,7 @@ def handle_socket():
                 sent_count = 0
 
                 while sent_count < data_size:
-                    sent_count += g_socket.send(img_data[sent_count:])
+                    sent_count += g_socket.send(img_data)
             except socket.timeout:
                 print("Failed to send result data")
 
@@ -154,7 +170,7 @@ def close():
 
 
 def main():
-    global img_data, g_socket, g_fbo, g_render_target, g_pbo, g_depth_target, g_engine, g_ready
+    global img_data, g_socket, g_fbo, g_render_target, g_pbos, g_depth_target, g_engine, g_ready
 
     # Init result image buffer
     for i in range(len(img_data), ):
@@ -172,11 +188,14 @@ def main():
     glutInit(sys.argv)
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB)
     glutInitWindowSize(320, 240)
-    glutInitWindowPosition(2100, 100)
+    glutInitWindowPosition(-1000, 100)
     glutCreateWindow(b"Fafnir Client")
     if USE_SOCKET:
         glutHideWindow()
     glutIdleFunc(display)
+
+    # Setup pixel buffer object
+    g_pbos = glGenBuffers(2)
 
     # Setup framebuffer
     g_fbo = glGenFramebuffers(1)
