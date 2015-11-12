@@ -46,7 +46,7 @@ void main()
 	ivec3 bb_min = ivec3(floor(min(min(v0, v1), v2)));
 	ivec3 bb_max = ivec3(ceil(max(max(v0, v1), v2)));
 
-	int width = imageSize(link_list).x;
+	uint width = uint(imageSize(link_list).x);
 
 
 	for (int z = bb_min.z; z < bb_max.z; ++z) {

@@ -33,7 +33,7 @@ void main()
 	if (work_id >= num_meshes)
 		return;
 
-	int width = imageSize(link_list).x;
+	uint width = uint(imageSize(link_list).x);
 
 	MeshData mesh = mesh_buffer[work_id];
 	ivec3 bb_min = ivec3(floor(u_res * (mesh.aabb[0].xyz - u_aabb[0]) / u_size));
