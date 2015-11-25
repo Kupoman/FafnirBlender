@@ -95,6 +95,15 @@ class TRIANGLE(ctypes.Structure):
         self.v2 = v2
 
 
+class RAY_HIT(ctypes.Structure):
+    _fields_ = [
+        ("t", ctypes.c_float),
+        ("tri_id", ctypes.c_uint32),
+        ("u", ctypes.c_float),
+        ("v", ctypes.c_float),
+    ]
+
+
 class Node:
     def __init__(self, model_matrix):
         self.model_matrix = model_matrix
@@ -449,6 +458,9 @@ class Engine:
     def __init__(self):
         self.mesh_buffer = glGenBuffers(1)
 
+        self.draw_width = 1
+        self.draw_height = 1
+
         self._objects = {}
         self._meshes = {}
 
@@ -456,15 +468,29 @@ class Engine:
 
         # Setup ray trace shader
         self._shader_fsq = Shader("fsq.vert", "fsq.frag")
+        self.ray_hit_buffer = glGenBuffers(1)
 
     def __del__(self):
         glDeleteTextures([self._scene_texid])
         glDeleteBuffers(2, [self._scene_tri_buffer, self._scene_vert_buffer])
 
+    def resize(self, width, height):
+        self.draw_width = width
+        self.draw_height = height
+
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.ray_hit_buffer)
+        glBufferData(GL_SHADER_STORAGE_BUFFER, width*height*ctypes.sizeof(RAY_HIT),
+            None, GL_STREAM_DRAW)
+
+        print("Resizing to {} x {}".format(width, height))
+
     def add_or_update_mesh(self, name, mesh):
         self._meshes[name] = mesh
 
-    def draw(self, view_mat, proj_mat):
+    def draw(self, width, height, view_mat, proj_mat):
+        if self.draw_width != width or self.draw_height != height:
+            self.resize(width, height)
+
         glClearColor(0.2, 0.2, 0.2, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
 
@@ -485,11 +511,16 @@ class Engine:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.mesh_buffer)
         glBufferData(GL_SHADER_STORAGE_BUFFER, ctypes.sizeof(GPU_MESH) * mesh_count,
                     mesh_data, GL_STREAM_READ)
+
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.mesh_buffer)
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.ray_hit_buffer)
 
         Voxelizer.voxelize_scene(self._meshes.values())
 
         glUseProgram(self._shader_fsq.program)
+
+        loc = self._shader_fsq.get_location("out_width")
+        glUniform1i(loc, self.draw_width)
 
         loc = self._shader_fsq.get_location("view_matrix")
         glUniformMatrix4fv(loc, 1, GL_FALSE, view_mat)

@@ -6,6 +6,8 @@
 const float epsilon = 0.00001;
 const uint LIST_END = 0xFFFFFFFF;
 
+layout(pixel_center_integer) in vec4 gl_FragCoord;
+
 struct MeshData{
 	vec4 voxel_resolution;
 	vec4 aabb[2];
@@ -16,6 +18,18 @@ struct MeshData{
 	samplerBuffer norm_buffer;
 	float pad[2];
 };
+
+struct RayHit {
+	float t;
+	float tri_id;
+	float u;
+	float v;
+};
+
+layout(std430, binding=1) buffer RayHitBuffer {
+	RayHit ray_hit_buffer[];
+};
+uniform int out_width;
 
 // Global state
 usamplerBuffer tri_buffer;
@@ -126,30 +140,47 @@ bool trace_list(uint ptr, layout(rg32ui) uimage2D link_list, int list_width,
 	return false;
 }
 
-void output_results(MeshData mesh, int tri_index, vec3 hit)
+void output_results(int mesh_id, int tri_index, vec3 hit)
 {
-	tri_buffer = mesh.tri_buffer;
-	vert_buffer = mesh.vert_buffer;
-	norm_buffer = mesh.norm_buffer;
+	int out_idx = int(gl_FragCoord.y) * out_width + int(gl_FragCoord.x);
+	if (mesh_id == -1) {
+		out_color = vec3(0.2);
 
-	float u = hit.y;
-	float v = hit.z;
+		ray_hit_buffer[out_idx].t = -1.0;
+		ray_hit_buffer[out_idx].tri_id = 0;
+		ray_hit_buffer[out_idx].u = 0.0;
+		ray_hit_buffer[out_idx].v = 0.0;
+	}
+	else {
+		MeshData mesh = mesh_buffer[mesh_id];
+		tri_buffer = mesh.tri_buffer;
+		vert_buffer = mesh.vert_buffer;
+		norm_buffer = mesh.norm_buffer;
 
-	Triangle triangle;
-	fetch_triangle(tri_index, triangle);
+		float u = hit.y;
+		float v = hit.z;
 
-	vec3 pos = texelFetch(vert_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
-	pos += texelFetch(vert_buffer, triangle.v1 + triangle.pad).xyz * u;
-	pos += texelFetch(vert_buffer, triangle.v2 + triangle.pad).xyz* v;
+		Triangle triangle;
+		fetch_triangle(tri_index, triangle);
 
-	vec3 norm = texelFetch(norm_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
-	norm += texelFetch(norm_buffer, triangle.v1 + triangle.pad).xyz * u;
-	norm += texelFetch(norm_buffer, triangle.v2 + triangle.pad).xyz* v;
+		vec3 pos = texelFetch(vert_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
+		pos += texelFetch(vert_buffer, triangle.v1 + triangle.pad).xyz * u;
+		pos += texelFetch(vert_buffer, triangle.v2 + triangle.pad).xyz* v;
 
-	vec3 L = normalize(vec3(3.0, -4.0, 6.0) - pos);
-	vec3 N = normalize(norm);
+		vec3 norm = texelFetch(norm_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
+		norm += texelFetch(norm_buffer, triangle.v1 + triangle.pad).xyz * u;
+		norm += texelFetch(norm_buffer, triangle.v2 + triangle.pad).xyz* v;
 
-	out_color = vec3(dot(N, L) * 0.8);
+		vec3 L = normalize(vec3(3.0, -4.0, 6.0) - pos);
+		vec3 N = normalize(norm);
+
+		out_color = vec3(dot(N, L) * 0.8);
+
+		ray_hit_buffer[out_idx].t = hit.x;
+		ray_hit_buffer[out_idx].tri_id = (mesh_id << 16) & (tri_index & 0xFFFF);
+		ray_hit_buffer[out_idx].u = hit.y;
+		ray_hit_buffer[out_idx].v = hit.z;
+	}
 }
 
 struct DDAData {
@@ -220,7 +251,6 @@ bool dda_in_bounds(DDAData dda)
 
 void main()
 {
-	out_color = vec3(0.2);
 	vec3 ray_d = normalize(in_ray_d);
 	vec3 ray_inv = vec3(1.0) / ray_d;
 
@@ -232,8 +262,10 @@ void main()
 	dda_init(scene_dda, scene_aabb, scene_resolution);
 	float unused;
 	vec3 ray_copy = vec3(in_ray_o);
-	if (!dda_ray_to_bounds(scene_dda, ray_copy, ray_d, ray_inv, unused))
+	if (!dda_ray_to_bounds(scene_dda, ray_copy, ray_d, ray_inv, unused)) {
+		output_results(-1, -1, vec3(0.0));
 		return;
+	}
 	dda_traversal_init(scene_dda, ray_copy, ray_d, ray_inv);
 
 	int scene_width = imageSize(scene_list).x;
@@ -290,8 +322,5 @@ void main()
 		dda_traversal_step(scene_dda);
 	}
 
-	if (closest_mesh_id != -1)
-	{
-		output_results(mesh_buffer[closest_mesh_id], closest_tri_id, closest_hit);
-	}
+	output_results(closest_mesh_id, closest_tri_id, closest_hit);
 }

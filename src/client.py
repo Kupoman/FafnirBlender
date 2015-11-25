@@ -67,7 +67,7 @@ def display():
     mrays = 0
     start = time.perf_counter()
     if g_vmat and g_pmat:
-        g_engine.draw(g_vmat, g_pmat)
+        g_engine.draw(g_width, g_height, g_vmat, g_pmat)
     if USE_SOCKET:
         g_pbo_index = (g_pbo_index + 1) % 2;
         next_index = (g_pbo_index + 1) % 2;
