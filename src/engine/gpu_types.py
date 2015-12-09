@@ -110,6 +110,6 @@ class GPU_MESH(ctypes.Structure):
         ("tri_buffer", ctypes.c_uint64),
         ("vert_buffer", ctypes.c_uint64),
         ("norm_buffer", ctypes.c_uint64),
-        ("pad0", ctypes.c_float),
-        ("pad1", ctypes.c_float),
+        ("vert_offset", ctypes.c_uint32),
+        ("element_offset", ctypes.c_uint32),
     ]

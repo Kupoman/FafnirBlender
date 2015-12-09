@@ -18,6 +18,7 @@ from OpenGL.GL.ARB.bindless_texture import *
 from .shaders import Shader
 from .gpu_types import *
 from .voxelizer import Voxelizer
+from .vertex_buffer import VertexBuffer
 
 
 class Node:
@@ -31,6 +32,7 @@ class Mesh:
         self.buf_positions = positions
         self.buf_normals = normals
         self.buf_indices = indices
+        self.vert_count = vert_count
 
         self.is_dirty = True
 
@@ -52,6 +54,7 @@ class Mesh:
             self.aabb[1][2] - self.aabb[0][2]
         )
 
+        self.element_count = element_count
         self.count = element_count // 3
 
         # Voxels
@@ -142,6 +145,8 @@ class Mesh:
         self.gpu_data.tri_buffer = self.hnd_indices
         self.gpu_data.vert_buffer = self.hnd_positions
         self.gpu_data.norm_buffer = self.hnd_normals
+        self.gpu_data.vert_offset = 0
+        self.gpu_data.element_offset = 0
 
     def update_voxels(self):
         if self.is_dirty:
@@ -164,6 +169,7 @@ def _mat_to_gl(matrix):
 class Engine:
     def __init__(self):
         self.mesh_buffer = glGenBuffers(1)
+        self.vertex_buffer = VertexBuffer()
 
         self.draw_width = 1
         self.draw_height = 1
@@ -193,6 +199,7 @@ class Engine:
 
     def add_or_update_mesh(self, name, mesh):
         self._meshes[name] = mesh
+        self.vertex_buffer.add_mesh(mesh)
 
     def draw(self, width, height, view_mat, proj_mat):
         if self.draw_width != width or self.draw_height != height:
@@ -200,11 +207,15 @@ class Engine:
 
         glClearColor(0.2, 0.2, 0.2, 1.0)
         glClear(GL_COLOR_BUFFER_BIT)
+        self.vertex_buffer.update()
 
         glMatrixMode(GL_MODELVIEW)
         glLoadMatrixf(view_mat)
         glMatrixMode(GL_PROJECTION)
         glLoadMatrixf(proj_mat)
+
+
+        self.vertex_buffer.bind(3, 4)
 
         for mesh in self._meshes.values():
             mesh.update_voxels()

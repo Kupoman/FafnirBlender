@@ -16,7 +16,8 @@ struct MeshData{
 	usamplerBuffer tri_buffer;
 	samplerBuffer vert_buffer;
 	samplerBuffer norm_buffer;
-	float pad[2];
+	uint base_vertex;
+	uint base_element;
 };
 
 struct RayHit {
@@ -32,9 +33,7 @@ layout(std430, binding=1) buffer RayHitBuffer {
 uniform int out_width;
 
 // Global state
-usamplerBuffer tri_buffer;
-samplerBuffer vert_buffer;
-samplerBuffer norm_buffer;
+MeshData current_mesh;
 int num_triangles;
 
 layout(std430, binding=0) buffer MeshBuffer {
@@ -44,6 +43,19 @@ uniform int num_meshes;
 
 struct Triangle {
 	int v0, v1, v2, pad;
+};
+
+struct Vertex {
+	vec4 position;
+	vec4 normal;
+};
+
+layout(std430, binding=3) buffer VertexBuffer {
+	Vertex vertex_buffer[];
+};
+
+layout(std430, binding=4) buffer IndexBuffer {
+	uint index_buffer[];
 };
 
 uniform vec3 scene_aabb[2];
@@ -60,9 +72,9 @@ out vec3 out_color;
 
 void fetch_triangle(int i, inout Triangle triangle)
 {
-	triangle.v0 = int(texelFetch(tri_buffer, i * 3 + 0).x);
-	triangle.v1 = int(texelFetch(tri_buffer, i * 3 + 1).x);
-	triangle.v2 = int(texelFetch(tri_buffer, i * 3 + 2).x);
+	triangle.v0 = int(index_buffer[i * 3 + 0 + int(current_mesh.base_element)]);
+	triangle.v1 = int(index_buffer[i * 3 + 1 + int(current_mesh.base_element)]);
+	triangle.v2 = int(index_buffer[i * 3 + 2 + int(current_mesh.base_element)]);
 	triangle.pad = 0;
 }
 
@@ -71,6 +83,7 @@ bool trace_list(uint ptr, layout(rg32ui) uimage2D link_list, int list_width,
 {
 	vec3 v0p, v1p, v2p;
 	Triangle triangle;
+	Vertex v0, v1, v2;
 	vec3 e0, e1, T, P, Q;
 	float det=1.0, inv_det, t, u=1.0, v=1.0;
 
@@ -87,10 +100,12 @@ bool trace_list(uint ptr, layout(rg32ui) uimage2D link_list, int list_width,
 	for (; i < num_triangles; ++i) {
 		fetch_triangle(i, triangle);
 #endif
-
-		v0p = texelFetch(vert_buffer, triangle.v0).xyz;
-		v1p = texelFetch(vert_buffer, triangle.v1).xyz;
-		v2p = texelFetch(vert_buffer, triangle.v2).xyz;
+		v0 = vertex_buffer[triangle.v0 + current_mesh.base_vertex];
+		v1 = vertex_buffer[triangle.v1 + current_mesh.base_vertex];
+		v2 = vertex_buffer[triangle.v2 + current_mesh.base_vertex];
+		v0p = v0.position.xyz;
+		v1p = v1.position.xyz;
+		v2p = v2.position.xyz;
 
 		e0 = v1p - v0p;
 		e1 = v2p - v0p;
@@ -153,9 +168,7 @@ void output_results(int mesh_id, int tri_index, vec3 hit)
 	}
 	else {
 		MeshData mesh = mesh_buffer[mesh_id];
-		tri_buffer = mesh.tri_buffer;
-		vert_buffer = mesh.vert_buffer;
-		norm_buffer = mesh.norm_buffer;
+		current_mesh = mesh;
 
 		float u = hit.y;
 		float v = hit.z;
@@ -163,13 +176,17 @@ void output_results(int mesh_id, int tri_index, vec3 hit)
 		Triangle triangle;
 		fetch_triangle(tri_index, triangle);
 
-		vec3 pos = texelFetch(vert_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
-		pos += texelFetch(vert_buffer, triangle.v1 + triangle.pad).xyz * u;
-		pos += texelFetch(vert_buffer, triangle.v2 + triangle.pad).xyz* v;
+		Vertex v0 = vertex_buffer[triangle.v0 + current_mesh.base_vertex];
+		Vertex v1 = vertex_buffer[triangle.v1 + current_mesh.base_vertex];
+		Vertex v2 = vertex_buffer[triangle.v2 + current_mesh.base_vertex];
 
-		vec3 norm = texelFetch(norm_buffer, triangle.v0 + triangle.pad).xyz * (1-u-v);
-		norm += texelFetch(norm_buffer, triangle.v1 + triangle.pad).xyz * u;
-		norm += texelFetch(norm_buffer, triangle.v2 + triangle.pad).xyz* v;
+		vec3 pos = v0.position.xyz * (1-u-v);
+		pos += v1.position.xyz * u;
+		pos += v2.position.xyz* v;
+
+		vec3 norm = v0.normal.xyz * (1-u-v);
+		norm += v1.normal.xyz * u;
+		norm += v2.normal.xyz* v;
 
 		vec3 L = normalize(vec3(3.0, -4.0, 6.0) - pos);
 		vec3 N = normalize(norm);
@@ -283,9 +300,7 @@ void main()
 			aabb[0] = mesh.aabb[0].xyz;
 			aabb[1] = mesh.aabb[1].xyz;
 			int list_width = imageSize(mesh.voxel_list).x;
-			tri_buffer = mesh.tri_buffer;
-			vert_buffer = mesh.vert_buffer;
-			norm_buffer = mesh.norm_buffer;
+			current_mesh = mesh;
 			num_triangles = int(mesh.voxel_resolution.w);
 
 			DDAData mesh_dda;
